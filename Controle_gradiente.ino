@@ -1,3 +1,16 @@
+/*
+  Clonagem de controle remoto TV gradiente || Projeto desenvolvido no CEFET/RJ campus Nova Iguaçu. Sob supervisão do Profº Valdinei ...
+
+  O projeto reproduz algumas funções do controle remoto de um TV gradiente. Para isso foi preciso usar um módulo TSOP1838 para capturar os valores.
+
+  Ciruito:
+  - Arduino Uno;
+  - LED IR til32;
+  - OBS.: O código é um teste do LED IR, por isso não usa botões e sim o prórpio teclado. Obrigatóriamente o LED_IR tem que estar em D3, pino com PWM
+  Criado em 2025
+  por Julio A. da Silva, Darlan C. de Araujo e Paulo A. de Moura
+
+*/  
 #include <IRremote.h>
 
 int LED_IR = 3;   // Pino do LED IR (Transmissor)
