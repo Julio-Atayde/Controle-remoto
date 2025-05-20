@@ -1,0 +1,127 @@
+#include <IRremoteESP8266.h>
+#include <IRsend.h>
+#include <ir_Tcl.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ==== DISPLAY ====
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+
+// ==== HARDWARE PINS ====
+const uint8_t pinBotaoPower = D1;
+const uint8_t pinBotaoAumentar = D5;
+const uint8_t pinBotaoDiminuir = D8;
+const uint16_t kIrLedPin = D2;
+
+// ==== OBJETO CONTROLE IR ====
+IRTcl112Ac ac(kIrLedPin);
+
+// ==== VARIÁVEIS ====
+int temperatura_atual = 20;
+bool arLigado = false;
+bool botaoPowerPressionado = false;
+bool botaoMaisPressionado = false;
+bool botaoMenosPressionado = false;
+
+void setup() {
+  Serial.begin(9600);
+  ac.begin();
+  Wire.begin(13, 12); // SDA = D7, SCL = D6
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Controle Elgin");
+
+  pinMode(pinBotaoPower, INPUT_PULLUP);
+  pinMode(pinBotaoAumentar, INPUT_PULLUP);
+  pinMode(pinBotaoDiminuir, INPUT_PULLUP);
+}
+
+void loop() {
+  lerBotaoPower();
+  lerBotoesDigitais();
+}
+
+void lerBotaoPower() {
+  if (digitalRead(pinBotaoPower) == LOW && !botaoPowerPressionado) {
+    botaoPowerPressionado = true;
+    alternarLigado();
+    digitalWrite(pinBotaoDiminuir, HIGH);
+  } else if (digitalRead(pinBotaoPower) == HIGH) {
+    botaoPowerPressionado = false;
+  }
+}
+
+void lerBotoesDigitais() {
+  if (digitalRead(pinBotaoAumentar) == LOW && !botaoMaisPressionado) {
+    botaoMaisPressionado = true;
+    AjustarTemp(true, false);
+  } else if (digitalRead(pinBotaoAumentar) == HIGH) {
+    botaoMaisPressionado = false;
+  }
+
+  if (digitalRead(pinBotaoDiminuir) == HIGH && !botaoMenosPressionado) {
+    botaoMenosPressionado = true;
+    AjustarTemp(false, true);
+  } else if (digitalRead(pinBotaoDiminuir) == LOW) {
+    botaoMenosPressionado = false;
+  }
+}
+
+// ==== LÓGICA ====
+void alternarLigado() {
+  arLigado = !arLigado;
+  if (arLigado) ligar();
+  else desligar();
+}
+
+void ligar() {
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03, 0x0B, 0x05, 0x00, 0x00, 0x00, 0x80, 0x00};
+  state[7] = 31 - temperatura_atual;
+  state[13] = calculaChecksum(state);
+  ac.setRaw(state);
+  ac.send();
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Ligado, Temp: ");
+  lcd.print(temperatura_atual);
+  lcd.print("C");
+}
+
+void desligar() {
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x20, 0x03, 0x0B, 0x05, 0x00, 0x00, 0x00, 0x80, 0x00};
+  state[13] = calculaChecksum(state);
+  ac.setRaw(state);
+  ac.send();
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Desligado");
+}
+
+void AjustarTemp(bool Tup, bool Tdown) {
+  if (!arLigado) return;
+
+  if (Tup && temperatura_atual < 31) temperatura_atual++;
+  if (Tdown && temperatura_atual > 16) temperatura_atual--;
+
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03, (uint8_t)(31 - temperatura_atual), 0x05, 0x00, 0x00, 0x00, 0x88, 0x00};
+  state[13] = calculaChecksum(state);
+  ac.setRaw(state);
+  ac.send();
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Temp ajustada:");
+  lcd.setCursor(0, 1);
+  lcd.print(temperatura_atual);
+  lcd.print(" C");
+}
+
+uint8_t calculaChecksum(uint8_t *dados) {
+  uint16_t soma = 0;
+  for (int i = 0; i < 13; i++) soma += dados[i];
+  return (uint8_t)(soma & 0xFF);
+}
