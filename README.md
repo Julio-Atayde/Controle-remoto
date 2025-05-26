@@ -22,3 +22,5 @@ temperatura: 0x0X, onde X = 31 - temperaura
 ventilador: 0x05 velocidade máxima do ventilador
 oscilar <> e parte decimal:  Primeiro digíto 8 para oscilar desligado e A para ligado. Segundo digíto 0 para inteiro e 8 para terminado em 0,5°C
 Checksum: Últimos byte da soma valores anteriores 
+
+Adcionamos um sensor de corrente não invasivo (SCT013-000) ao circuito para monitorar o estado do ar-condicionado
