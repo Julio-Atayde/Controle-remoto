@@ -1,20 +1,30 @@
+/*
+
+*/
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <EmonLib.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
 #include <ir_Tcl.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
 
-// ==== DISPLAY ====
-LiquidCrystal_I2C lcd(0x27, 20, 4);
+// ==== CONFIG WIFI ====
+const char* ssid = "LabTD";
+const char* password = "labtd#123";
 
-// ==== HARDWARE PINS ====
+// ==== PINOS ====
 const uint8_t pinBotaoPower = D1;
 const uint8_t pinBotaoAumentar = D5;
 const uint8_t pinBotaoDiminuir = D8;
 const uint16_t kIrLedPin = D2;
 
-// ==== OBJETO CONTROLE IR ====
+// ==== OBJETOS ====
 IRTcl112Ac ac(kIrLedPin);
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+ESP8266WebServer server(80);
+EnergyMonitor emon;
 
 // ==== VARIÁVEIS ====
 int temperatura_atual = 20;
@@ -22,32 +32,77 @@ bool arLigado = false;
 bool botaoPowerPressionado = false;
 bool botaoMaisPressionado = false;
 bool botaoMenosPressionado = false;
+float corrente = 0.0;
 
 void setup() {
   Serial.begin(9600);
-  ac.begin();
-  Wire.begin(13, 12); // SDA = D7, SCL = D6
+  Wire.begin(13, 12); // SDA=D7, SCL=D6
+  lcd.init(); lcd.backlight();
 
-  lcd.init();
-  lcd.backlight();
-  lcd.setCursor(0, 0);
-  lcd.print("Controle Elgin");
+  ac.begin();
+  emon.current(A0, 90.9);  // Calibração do sensor SCT-013
 
   pinMode(pinBotaoPower, INPUT_PULLUP);
   pinMode(pinBotaoAumentar, INPUT_PULLUP);
   pinMode(pinBotaoDiminuir, INPUT_PULLUP);
+
+  // Conexão Wi-Fi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+  Serial.print("IP: "); Serial.println(WiFi.localIP());
+
+  // Página Web principal
+  server.on("/", []() {
+    String html = "<html><head><meta http-equiv='refresh' content='300'></head><body>";
+    html += "<h1>Status do Ar</h1>";
+    html += "<p>Corrente: " + String(corrente, 2) + " A</p>";
+    html += "<p>Temperatura: " + String(temperatura_atual) + " C</p>";
+    html += "<p>Status: <strong>" + String((corrente > 1.0) ? "Ligado (em uso)" : "Desligado (sem consumo)") + "</strong></p>";
+    html += "<form action='/power' method='get'><button type='submit'>Power</button></form>";
+    html += "<form action='/mais' method='get'><button type='submit'>+</button></form>";
+    html += "<form action='/menos' method='get'><button type='submit'>-</button></form>";
+    html += "</body></html>";
+    server.send(200, "text/html", html);
+  });
+
+  // Rotas para os botões da página
+  server.on("/power", []() {
+    alternarLigado();
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.on("/mais", []() {
+    AjustarTemp(true, false);
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.on("/menos", []() {
+    AjustarTemp(false, true);
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.begin();
+
+  lcd.setCursor(0, 0);
+  lcd.print("Controle IR");
 }
 
 void loop() {
+  server.handleClient();
   lerBotaoPower();
   lerBotoesDigitais();
+  atualizarCorrente();
+  atualizarLCD();
+  delay(200);
 }
 
 void lerBotaoPower() {
   if (digitalRead(pinBotaoPower) == LOW && !botaoPowerPressionado) {
     botaoPowerPressionado = true;
     alternarLigado();
-    digitalWrite(pinBotaoDiminuir, HIGH);
   } else if (digitalRead(pinBotaoPower) == HIGH) {
     botaoPowerPressionado = false;
   }
@@ -61,63 +116,59 @@ void lerBotoesDigitais() {
     botaoMaisPressionado = false;
   }
 
-  if (digitalRead(pinBotaoDiminuir) == HIGH && !botaoMenosPressionado) {
+  if (digitalRead(pinBotaoDiminuir) == LOW && !botaoMenosPressionado) {
     botaoMenosPressionado = true;
     AjustarTemp(false, true);
-  } else if (digitalRead(pinBotaoDiminuir) == LOW) {
+  } else if (digitalRead(pinBotaoDiminuir) == HIGH) {
     botaoMenosPressionado = false;
   }
 }
 
-// ==== LÓGICA ====
+void atualizarCorrente() {
+  corrente = emon.calcIrms(1480);
+}
+
+void atualizarLCD() {
+  lcd.setCursor(0, 1);
+  lcd.print("Temp: ");
+  lcd.print(temperatura_atual);
+  lcd.print(" C   ");
+
+  lcd.setCursor(0, 2);
+  lcd.print("Estado: ");
+  lcd.print(arLigado ? "POWER   " : "OFF/VENT ");
+}
+
 void alternarLigado() {
-  arLigado = !arLigado;
-  if (arLigado) ligar();
-  else desligar();
+  if (arLigado) desligar();
+  else ligar();
 }
 
 void ligar() {
-  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03, 0x0B, 0x05, 0x00, 0x00, 0x00, 0x80, 0x00};
-  state[7] = 31 - temperatura_atual;
+  arLigado = true;
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03, (uint8_t)(31 - temperatura_atual),
+                       0x05, 0x00, 0x00, 0x00, 0x80, 0x00};
   state[13] = calculaChecksum(state);
-  ac.setRaw(state);
-  ac.send();
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Ligado, Temp: ");
-  lcd.print(temperatura_atual);
-  lcd.print("C");
+  ac.setRaw(state); ac.send();
 }
 
 void desligar() {
-  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x20, 0x03, 0x0B, 0x05, 0x00, 0x00, 0x00, 0x80, 0x00};
+  arLigado = false;
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x20, 0x03, 0x0B,
+                       0x05, 0x00, 0x00, 0x00, 0x80, 0x00};
   state[13] = calculaChecksum(state);
-  ac.setRaw(state);
-  ac.send();
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Desligado");
+  ac.setRaw(state); ac.send();
 }
 
 void AjustarTemp(bool Tup, bool Tdown) {
   if (!arLigado) return;
-
   if (Tup && temperatura_atual < 31) temperatura_atual++;
   if (Tdown && temperatura_atual > 16) temperatura_atual--;
 
-  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03, (uint8_t)(31 - temperatura_atual), 0x05, 0x00, 0x00, 0x00, 0x88, 0x00};
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03,
+                       (uint8_t)(31 - temperatura_atual), 0x05, 0x00, 0x00, 0x00, 0x88, 0x00};
   state[13] = calculaChecksum(state);
-  ac.setRaw(state);
-  ac.send();
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Temp ajustada:");
-  lcd.setCursor(0, 1);
-  lcd.print(temperatura_atual);
-  lcd.print(" C");
+  ac.setRaw(state); ac.send();
 }
 
 uint8_t calculaChecksum(uint8_t *dados) {
