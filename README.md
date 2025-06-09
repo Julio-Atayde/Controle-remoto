@@ -23,4 +23,5 @@ ventilador: 0x05 velocidade máxima do ventilador
 oscilar <> e parte decimal:  Primeiro digíto 8 para oscilar desligado e A para ligado. Segundo digíto 0 para inteiro e 8 para terminado em 0,5°C
 Checksum: Últimos byte da soma valores anteriores 
 
-Adcionamos um sensor de corrente não invasivo (SCT013-000) ao circuito para monitorar o estado do ar-condicionado
+Adcionamos um sensor de corrente não invasivo (SCT013-000) ao circuito para monitorar o estado do ar-condicionado. Esse sensor se trata de um transformador de corrente 2000:1. No nosso caso 100A:50mA, para usar ele precisamos converter essa corrente em tensão para o pino A0 e centralizar a senoide em 1,65V (Senoide entre 0V e 3,3V). Assumindo o máximo de corrente em 100Arms temos 50mArms no secundário (70,707mA de pico). Assim, RL = 1,65V/70,707mA = 23,34Ω. 
+Usamos um resistor de 23Ω e um divisor de tensão de dois resistores de 10kΩ para centralizar a senoide. Para usar o sensor é necessário usar a biblioteca emonlib, detalhe na inicialização do sensor pede o valor de calibração que é o número de espiras dividido pelo valor do resistor (No nosso caso é 2000/23)
