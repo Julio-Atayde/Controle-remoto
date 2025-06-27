@@ -1,6 +1,3 @@
-/*
-
-*/
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <EmonLib.h>
@@ -9,6 +6,16 @@
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
 #include <ir_Tcl.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+#include <time.h>
+
+// ==== DHT22 ====
+#define DHTPIN D3
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+float tempAmbiente = 0.0;
+float umidadeAmbiente = 0.0;
 
 // ==== CONFIG WIFI ====
 const char* ssid = "LabTD";
@@ -34,38 +41,76 @@ bool botaoMaisPressionado = false;
 bool botaoMenosPressionado = false;
 float corrente = 0.0;
 
+int UltimoTempo = 0;
+int intervalo = 3000;
+
+int horaDesligar = 22; // Desligar às 22h
+int minutoDesligar = 0;
+bool desligadoHoje = false;
+
 void setup() {
+  configTime(-3 * 3600, 0, "pool.ntp.org", "time.nist.gov"); // Fuso horário de Brasília (UTC-3)
   Serial.begin(9600);
   Wire.begin(13, 12); // SDA=D7, SCL=D6
   lcd.init(); lcd.backlight();
-
   ac.begin();
-  emon.current(A0, 90.9);  // Calibração do sensor SCT-013
+  emon.current(A0, 9.09090909091);  // Calibração do sensor SCT-013 Resistor de 220 ohms
+  
+  dht.begin();
 
   pinMode(pinBotaoPower, INPUT_PULLUP);
   pinMode(pinBotaoAumentar, INPUT_PULLUP);
   pinMode(pinBotaoDiminuir, INPUT_PULLUP);
 
-  // Conexão Wi-Fi
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) delay(500);
   Serial.print("IP: "); Serial.println(WiFi.localIP());
 
-  // Página Web principal
   server.on("/", []() {
-    String html = "<html><head><meta http-equiv='refresh' content='300'></head><body>";
-    html += "<h1>Status do Ar</h1>";
-    html += "<p>Corrente: " + String(corrente, 2) + " A</p>";
-    html += "<p>Temperatura: " + String(temperatura_atual) + " C</p>";
-    html += "<p>Status: <strong>" + String((corrente > 1.0) ? "Ligado (em uso)" : "Desligado (sem consumo)") + "</strong></p>";
-    html += "<form action='/power' method='get'><button type='submit'>Power</button></form>";
-    html += "<form action='/mais' method='get'><button type='submit'>+</button></form>";
-    html += "<form action='/menos' method='get'><button type='submit'>-</button></form>";
-    html += "</body></html>";
-    server.send(200, "text/html", html);
-  });
+  time_t now = time(nullptr);
+  struct tm* timeinfo = localtime(&now);
+  char horaStr[20];
+  snprintf(horaStr, sizeof(horaStr), "%02d/%02d %02d:%02d:%02d", 
+           timeinfo->tm_mday, timeinfo->tm_mon + 1, timeinfo->tm_hour, 
+           timeinfo->tm_min, timeinfo->tm_sec);
 
-  // Rotas para os botões da página
+  String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<style>";
+  html += "body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }";
+  html += "h1 { font-size: 28px; }";
+  html += "p { font-size: 20px; margin: 10px 0; }";
+  html += ".btn { font-size: 22px; padding: 12px 24px; margin: 10px; border-radius: 10px; border: none; cursor: pointer; }";
+  html += ".power-on { background-color: #2196F3; color: white; }";  // Azul (ligado)
+  html += ".power-off { background-color: #888888; color: white; }"; // Cinza (desligado)
+  html += ".ctrl { background-color: #2196F3; color: white; }";      // Azul (controle)
+  html += "button:hover { opacity: 0.9; }";
+  html += "</style>";
+  html += "<meta http-equiv='refresh' content='15'></head><body>";
+
+  html += "<h1>Status do Ar</h1>";
+  html += "<p><strong>Hora atual:</strong> " + String(horaStr) + "</p>";
+  html += "<p><strong>Corrente:</strong> " + String(corrente, 2) + " A</p>";
+  html += "<p><strong>Temperatura Ajustada:</strong> " + String(temperatura_atual) + "ºC</p>";
+  html += "<p><strong>Temperatura Ambiente:</strong> " + String(tempAmbiente, 1) + "ºC</p>";
+  html += "<p><strong>Umidade:</strong> " + String(umidadeAmbiente, 1) + " %</p>";
+
+  // Botão Power com cor e texto baseado no estado
+  html += "<form action='/power' method='get'>";
+  html += "<button class='btn " + String(arLigado ? "power-on" : "power-off") + "' type='submit'>";
+  html += arLigado ? "Desligar (Ligado)" : "Ligar (Desligado)";
+  html += "</button></form>";
+
+  // Botões + e -
+  html += "<form action='/mais' method='get'><button class='btn ctrl' type='submit'>Aumentar temperatura</button></form>";
+  html += "<form action='/menos' method='get'><button class='btn ctrl' type='submit'>Diminiur temperatura</button></form>";
+
+  html += "</body></html>";
+
+  server.send(200, "text/html", html);
+});
+
+
+
   server.on("/power", []() {
     alternarLigado();
     server.sendHeader("Location", "/");
@@ -92,11 +137,49 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  unsigned long tempoAtual = millis();
+
+  // Adiciona captura do tempo no início do loop
+  time_t now = time(nullptr);
+  struct tm* timeinfo = localtime(&now);
+
+  if (tempoAtual - UltimoTempo >= intervalo) {
+    UltimoTempo = tempoAtual;
+    atualizarCorrente();
+    lerAmbiente();
+    atualizarLCD();
+  }
+
+  // Verificação de horário para desligamento
+  if (timeinfo->tm_hour == horaDesligar && timeinfo->tm_min == minutoDesligar && !desligadoHoje) {
+    if (arLigado) {
+      desligar();
+      Serial.println("Ar-condicionado desligado automaticamente às 15h10.");
+    }
+    desligadoHoje = true;
+  }
+
+  // Reset da flag para o próximo dia
+  if (timeinfo->tm_hour == 0 && timeinfo->tm_min == 0) {
+    desligadoHoje = false;
+  }
+
   lerBotaoPower();
   lerBotoesDigitais();
-  atualizarCorrente();
-  atualizarLCD();
-  delay(200);
+}
+
+
+void lerAmbiente() {
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+  
+  if (!isnan(t)) tempAmbiente = t;
+  if (!isnan(h)) umidadeAmbiente = h;
+
+  time_t now = time(nullptr);
+  struct tm* timeinfo = localtime(&now);
+
+  
 }
 
 void lerBotaoPower() {
@@ -129,14 +212,28 @@ void atualizarCorrente() {
 }
 
 void atualizarLCD() {
-  lcd.setCursor(0, 1);
-  lcd.print("Temp: ");
+  lcd.setCursor(0, 0);
+  lcd.print("Temp AC: ");
   lcd.print(temperatura_atual);
-  lcd.print(" C   ");
+  lcd.print("C   ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Amb: ");
+  lcd.print(tempAmbiente, 1);
+  lcd.print("C ");
+  lcd.print(umidadeAmbiente, 1);
+  lcd.print("% ");
 
   lcd.setCursor(0, 2);
   lcd.print("Estado: ");
-  lcd.print(arLigado ? "POWER   " : "OFF/VENT ");
+  lcd.print(arLigado ? "LIGADO   " : "DESLIGADO");
+
+  lcd.setCursor(0, 3);
+  time_t now = time(nullptr);
+  struct tm* timeinfo = localtime(&now);
+  char horaStr[20];
+  snprintf(horaStr, sizeof(horaStr), "%02d/%02d %02d:%02d:%02d", timeinfo->tm_mday, timeinfo->tm_mon + 1, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+  lcd.print(horaStr);
 }
 
 void alternarLigado() {
@@ -174,5 +271,4 @@ void AjustarTemp(bool Tup, bool Tdown) {
 uint8_t calculaChecksum(uint8_t *dados) {
   uint16_t soma = 0;
   for (int i = 0; i < 13; i++) soma += dados[i];
-  return (uint8_t)(soma & 0xFF);
-}
+  return
