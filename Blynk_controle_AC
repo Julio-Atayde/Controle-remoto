@@ -73,6 +73,14 @@ void setup() {
 
   Blynk.begin(auth, ssid, password);
 
+  while (WiFi.status() != WL_CONNECTED) {
+  delay(500);
+  Serial.print(".");
+}
+Serial.println();
+Serial.print("Conectado à rede Wi-Fi! IP: ");
+Serial.println(WiFi.localIP());
+
   server.on("/", []() {
     time_t now = time(nullptr);
     struct tm* timeinfo = localtime(&now);
