@@ -1,0 +1,172 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <IRremoteESP8266.h>
+#include <IRsend.h>
+#include <ir_Tcl.h>
+
+// ==== CONFIG WIFI ====
+const char* ssid = "LabTD";
+const char* password = "labtd#123";
+
+// ==== PINOS ====
+const uint8_t pinBotaoPower = D1;
+const uint8_t pinBotaoAumentar = D5;
+const uint8_t pinBotaoDiminuir = D8;
+const uint16_t kIrLedPin = D2;
+
+// ==== OBJETOS ====
+IRTcl112Ac ac(kIrLedPin);
+ESP8266WebServer server(80);
+
+// ==== VARIÁVEIS ====
+bool arLigado = false;
+bool botaoPowerPressionado = false;
+bool botaoMaisPressionado = false;
+bool botaoMenosPressionado = false;
+int temperatura_atual = 20;
+
+
+void setup() {
+  Serial.begin(9600);
+  ac.begin();  
+
+  pinMode(pinBotaoPower, INPUT_PULLUP);
+  pinMode(pinBotaoAumentar, INPUT_PULLUP);
+  pinMode(pinBotaoDiminuir, INPUT_PULLUP);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+  Serial.print("IP: "); Serial.println(WiFi.localIP());
+
+  server.on("/", []() {
+  time_t now = time(nullptr);
+  struct tm* timeinfo = localtime(&now);
+  char horaStr[20];
+  snprintf(horaStr, sizeof(horaStr), "%02d/%02d %02d:%02d:%02d", 
+           timeinfo->tm_mday, timeinfo->tm_mon + 1, timeinfo->tm_hour, 
+           timeinfo->tm_min, timeinfo->tm_sec);
+
+  String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<style>";
+  html += "body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }";
+  html += "h1 { font-size: 28px; }";
+  html += "p { font-size: 20px; margin: 10px 0; }";
+  html += ".btn { font-size: 22px; padding: 12px 24px; margin: 10px; border-radius: 10px; border: none; cursor: pointer; }";
+  html += ".power-on { background-color: #2196F3; color: white; }";  // Azul (ligado)
+  html += ".power-off { background-color: #888888; color: white; }"; // Cinza (desligado)
+  html += ".ctrl { background-color: #2196F3; color: white; }";      // Azul (controle)
+  html += "button:hover { opacity: 0.9; }";
+  html += "</style>";
+  html += "<meta http-equiv='refresh' content='15'></head><body>";
+
+  // Botão Power com cor e texto baseado no estado
+  html += "<form action='/power' method='get'>";
+  html += "<button class='btn " + String(arLigado ? "power-on" : "power-off") + "' type='submit'>";
+  html += arLigado ? "Desligar (Ligado)" : "Ligar (Desligado)";
+  html += "</button></form>";
+
+  // Botões + e -
+  html += "<form action='/mais' method='get'><button class='btn ctrl' type='submit'>+</button></form>";
+  html += "<form action='/menos' method='get'><button class='btn ctrl' type='submit'>-</button></form>";
+
+  html += "</body></html>";
+
+  server.send(200, "text/html", html);
+});
+
+
+
+  server.on("/power", []() {
+    alternarLigado();
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.on("/mais", []() {
+    AjustarTemp(true, false);
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.on("/menos", []() {
+    AjustarTemp(false, true);
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.begin();
+
+}
+
+void loop() {
+  server.handleClient();
+
+  lerBotaoPower();
+  lerBotoesDigitais();
+}
+
+
+
+void lerBotaoPower() {
+  if (digitalRead(pinBotaoPower) == LOW && !botaoPowerPressionado) {
+    botaoPowerPressionado = true;
+    alternarLigado();
+  } else if (digitalRead(pinBotaoPower) == HIGH) {
+    botaoPowerPressionado = false;
+  }
+}
+
+void lerBotoesDigitais() {
+  if (digitalRead(pinBotaoAumentar) == LOW && !botaoMaisPressionado) {
+    botaoMaisPressionado = true;
+    AjustarTemp(true, false);
+  } else if (digitalRead(pinBotaoAumentar) == HIGH) {
+    botaoMaisPressionado = false;
+  }
+
+  if (digitalRead(pinBotaoDiminuir) == LOW && !botaoMenosPressionado) {
+    botaoMenosPressionado = true;
+    AjustarTemp(false, true);
+  } else if (digitalRead(pinBotaoDiminuir) == HIGH) {
+    botaoMenosPressionado = false;
+  }
+}
+
+
+void alternarLigado() {
+  if (arLigado) desligar();
+  else ligar();
+}
+
+void ligar() {
+  arLigado = true;
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03, (uint8_t)(31 - temperatura_atual),
+                       0x05, 0x00, 0x00, 0x00, 0x80, 0x00};
+  state[13] = calculaChecksum(state);
+  ac.setRaw(state); ac.send();
+}
+
+void desligar() {
+  arLigado = false;
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x20, 0x03, 0x0B,
+                       0x05, 0x00, 0x00, 0x00, 0x80, 0x00};
+  state[13] = calculaChecksum(state);
+  ac.setRaw(state); ac.send();
+}
+
+void AjustarTemp(bool Tup, bool Tdown) {
+  if (!arLigado) return;
+  if (Tup && temperatura_atual < 31) temperatura_atual++;
+  if (Tdown && temperatura_atual > 16) temperatura_atual--;
+
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03,
+                       (uint8_t)(31 - temperatura_atual), 0x05, 0x00, 0x00, 0x00, 0x88, 0x00};
+  state[13] = calculaChecksum(state);
+  ac.setRaw(state); ac.send();
+}
+
+uint8_t calculaChecksum(uint8_t *dados) {
+  uint16_t soma = 0;
+  for (int i = 0; i < 13; i++) soma += dados[i];
+  return (uint8_t)(soma & 0xFF);
+}
