@@ -1,0 +1,203 @@
+/*
+  Projeto de clonagem do Controle de Ar-condicionado Elgin
+
+  Projeto desenvolvido no CEFET/RJ, Campus Nova Iguaçu.
+  Alunos: Darlan C. de Araujo, Julio Cesar A. da Silva e Paulo Harryson A. de Moura.
+  Professor: Valdinei ...
+  
+
+  Circuito:
+  - Use dois LED IR til32;
+  - ESP8266 NodeMCU ...
+  - Resistor 1/8W, 100Ω
+  - Protoboard
+  - 4 botões
+  - Notas: O exemplo IRrecvDumpV3 foi usado para entender o funcionamento do controle do ar-condicionado
+    Exemplo disponível em: Arquivo > Exemplos > IRremoteESP8266
+  */
+  Resultados de IRrecvDumpV3:
+  Timestamp : 001279.762
+  Library   : v2.8.6
+  Protocol  : TCL112AC
+  Code      : 0x23CB260200400000000000000065 (112 Bits)
+  Mesg Desc.: Model: 1 (TAC09CHSD), Type: 2, Quiet: Off
+  uint16_t rawData[227] = {}
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x02, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65};
+
+
+  Timestamp : 001279.946
+  Library   : v2.8.6
+
+  Protocol  : TCL112AC
+  Code      : 0x23CB26010020030B0500000080C8 (112 Bits)
+  Mesg Desc.: Model: 1 (TAC09CHSD), Type: 1, Power: Off, Mode: 3 (Cool), Temp: 20C, Fan: 5 (High), Swing(V): 0 (Auto), Swing(H): Off, Econo: Off, Health: Off, Turbo: Off, Light: On, On Timer: Off, Off Timer: Off
+  uint16_t rawData[227] = {}
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x20, 0x03, 0x0B, 0x05, 0x00, 0x00, 0x00, 0x80, 0xC8};
+  
+  Notas: Este conjunto de 14 bytes (state[14]) é o sinal enviado pelo controle do ar condicionado, ao variar as teclas que apertamos do controle chegamos a um padrão.
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x20, 0x03, 0x0B, 0x05, 0x00, 0x00, 0x00, 0x80, 0xC8};
+  A sequência 0x23, 0xCB, 0x26, 0x01, 0x00 normalmente não muda.
+  state[5] determina o estado ligado/desligado. 0x20 para desligado e 0x24 para ligado.
+  state[6] determina modo, sendo 0x03 para refrigerar.
+  state[7] determina a temperatura, no formato 0x0X. Onde X = 31 - T.
+  state[8] determina velocidade do ventilador do ar-condicionado, sendo 0x05 para velocidade máxima.
+  As posições 9,10 e 11 não mudam, sempre assumem 0x00.
+  state[12] determina oscilar <> e a parte decimal da temperatura, primeiro digito '8' oscilar desligado e 'A' ligado. Segundo digito '0' para inteiro '8' para terminado em 0,5°C
+  state[13] checksum, últimos dois bytes da soma dos outros valores. Por exemplo a soma do código acima é: 1C8. Por isso o checksum é C8.
+  
+  
+  criado em 2025
+  por alunos listado acima.
+  modificado em dd/mmm/aaaa
+  por ...
+
+  O código executa as seguintes funções: Ligar, Desligar e AJuste de temperatura
+*/
+
+#include <IRremoteESP8266.h>
+#include <IRsend.h>
+#include <ir_Tcl.h>  // Suporte ao protocolo TCL112AC
+
+const uint16_t kIrLedPin = 4;      // D2 no NodeMCU
+const uint8_t botaoPinL = 12;      // D6 no NodeMCU
+const uint8_t botaoPinD = 14;      // D5 no NodeMCU
+const uint8_t botaoPinTup = 13;    // D7 no NodeMCU
+const uint8_t botaoPinTdown = 5;   // D1 no NodeMCU
+//Se for trocar algum botão de porta não use D0
+
+IRTcl112Ac ac(kIrLedPin); //
+
+bool botaoPressionadoL = false;
+bool botaoPressionadoD = false;
+bool botaoPressionadoTdown = false;
+bool botaoPressionadoTup = false;
+//Declarando variaveis de 0 ou 1 para os botões
+
+int temperatura_inicial = 20; //Para ligar em temperatura fixa ou última usada
+int temperatura_atual = 20; //Salva os valores atuais de temperatura
+
+
+
+void setup() {
+  Serial.begin(115200); //Inicializa o serial monitor
+  ac.begin(); //Inicializa as funções de envio de sinais
+
+  pinMode(botaoPinD, INPUT_PULLUP);
+  pinMode(botaoPinL, INPUT_PULLUP);
+  pinMode(botaoPinTup, INPUT_PULLUP);
+  pinMode(botaoPinTdown, INPUT_PULLUP); //Inicializa os botões
+
+  Serial.println("Pressione os botões para enviar comandos IR."); //Mensagem inicial
+}
+
+
+
+void loop() {
+  // Lê botões
+  bool estadoBotaoL = digitalRead(botaoPinL);
+  bool estadoBotaoD = digitalRead(botaoPinD);
+  bool estadoBotaoTup = digitalRead(botaoPinTup);
+  bool estadoBotaoTdown = digitalRead(botaoPinTdown);
+  unsigned long agora = millis();
+
+  if (estadoBotaoL == LOW && !botaoPressionadoL) {
+    botaoPressionadoL = true;
+    ligar(true); //Chama a função ligar
+  } else if (estadoBotaoL == HIGH && botaoPressionadoL) {
+    botaoPressionadoL = false;
+  }
+
+  if (estadoBotaoD == LOW && !botaoPressionadoD) {
+    botaoPressionadoD = true;
+    desligar(true); //Chama a função desligar
+  } else if (estadoBotaoD == HIGH && botaoPressionadoD) {
+    botaoPressionadoD = false;
+  }
+
+  if (estadoBotaoTup == LOW && !botaoPressionadoTup && (agora - ultimoTempoTup > debounceDelay)) {
+    botaoPressionadoTup = true;
+    AjustarTemp(true, false, temperatura_atual); //Chama a função AjustarTemp
+  } else if (estadoBotaoTup == HIGH && botaoPressionadoTup) {
+    botaoPressionadoTup = false;
+  }
+
+  if (estadoBotaoTdown == LOW && !botaoPressionadoTdown && (agora - ultimoTempoTdown > debounceDelay)) {
+    botaoPressionadoTdown = true;
+    AjustarTemp(false, true, temperatura_atual); //Chama a função AjustarTemp
+  } else if (estadoBotaoTdown == HIGH && botaoPressionadoTdown) {
+    botaoPressionadoTdown = false;
+  }
+}
+
+
+void ligar(bool ligar) {
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03, 0x0B, 0x05, 0x00, 0x00, 0x00, 0x80, 0x00};
+  
+  // Aplica temperatura salva
+  state[7] = 31 - temperatura_inicial; //No primeiro uso, a temperatura é 20°C. Se não será a temperatura em que o ar foi desligado pela última vez.
+  state[13] = calculaChecksum(state); //Atribui o valor correto ao checksum
+  ac.setRaw(state); //transforma o state em raw
+  ac.send(); //envia o comando em raw
+
+  Serial.println("Ligar o ar-condicionado");
+  Serial.print("Modo: Cool, Ventilador: 3, Temperatura: ");
+  Serial.print(temperatura_inicial);
+  Serial.println(" °C");
+
+  temperatura_atual = temperatura_inicial;  // Atualiza o valor atual da temperatura
+}
+
+void desligar(bool desligar) {
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x20, 0x03, 0x0B, 0x05, 0x00, 0x00, 0x00, 0x80, 0x00};
+  state[13] = calculaChecksum(state); //Atribui o valor correto ao checksum
+  ac.setRaw(state); //transforma o state em raw
+  ac.send(); //envia o comando em raw
+
+  temperatura_inicial = temperatura_atual;  // Salva a temperatura ao desligar
+
+  Serial.println("Desligar o ar-condicionado");
+}
+
+
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03, 0x00, 0x05, 0x00, 0x00, 0x00, 0x88, 0x00};
+ 
+
+
+
+void AjustarTemp(bool Tup, bool Tdown, int &temperatura_atual){
+  uint8_t state[14] = {0x23, 0xCB, 0x26, 0x01, 0x00, 0x24, 0x03, 0x00, 0x05, 0x00, 0x00, 0x00, 0x88, 0x00};
+
+  if (Tup && temperatura_atual < 31) {
+    temperatura_atual += 1; //A temperatura assume o valor do seu sucessor 
+    state[7] = 31 - temperatura_atual; //Calculo do valor que deve ficar no espaço 7
+    state[13] = calculaChecksum(state); //Atribui o valor correto ao checksum
+    ac.setRaw(state); //transforma o state em raw
+    ac.send(); //envia o comando em raw
+    Serial.println("Aumentar a temperatura");
+    Serial.print("Temperatura atual: ");
+    Serial.print(temperatura_atual);
+    Serial.println(" °C");
+  }
+
+  if (Tdown && temperatura_atual > 16) {
+    temperatura_atual -= 1; //A temperatura assume o valor do seu antecessor
+    state[7] = 31 - temperatura_atual; //Calculo do valor que deve ficar no espaço 7
+    state[13] = calculaChecksum(state); //Atribui o valor correto ao checksum
+    ac.setRaw(state); //transforma o state em raw
+    ac.send(); //envia o comando em raw
+    Serial.println("Diminuir a temperatura");
+    Serial.print("Temperatura atual: ");
+    Serial.print(temperatura_atual);
+    Serial.println(" °C");
+  }
+}
+
+
+
+uint8_t calculaChecksum(uint8_t *dados) {
+  uint16_t soma = 0; //Variavel que guarda a soma dos valores
+  for (int i = 0; i < 13; i++) {
+    soma += dados[i]; //A cada incremento em i, o valor correspondente em state[] é somado com a variavel soma inicialmente nula
+  }
+  return (uint8_t)(soma & 0xFF); //Retorna o valor da soma em hexadecimal. 0xFF garante que a função retorne apenas dois digitos (um byte)
+}
